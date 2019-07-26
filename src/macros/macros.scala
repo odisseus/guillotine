@@ -20,11 +20,13 @@
 package guillotine
 
 import contextual._
-import concurrent._, ExecutionContext.Implicits.global
-import language.higherKinds
-import java.io.File
-import scala.io.Source
 
+import concurrent._
+import ExecutionContext.Implicits.global
+import language.higherKinds
+import java.io.{BufferedInputStream, File, InputStream, OutputStream, PrintStream, Writer}
+
+import scala.io.Source
 import scala.collection.JavaConverters._
 import scala.util._
 
@@ -185,6 +187,34 @@ object `package` {
         case e: java.io.IOException => {
           stderr(e.getMessage)
             Running(None)
+        }
+      }
+    }
+
+    def async[T](stdoutSink: OutputStream, stderrSink: PrintStream)(implicit env: Environment): Running = {
+      val pb = new ProcessBuilder(args: _*)
+      val envMap = pb.environment
+      env.variables.foreach { case (k, v) => envMap.put(k, v) }
+      env.workDir.foreach { wd => pb.directory(new java.io.File(wd)) }
+
+      try {
+        val proc = pb.start()
+        val out = new BufferedInputStream(proc.getInputStream())
+        val err = new java.io.BufferedReader(new java.io.InputStreamReader(proc.getErrorStream()))
+
+        class Pump(stream: InputStream, send: OutputStream) extends Thread {
+          override def run() = {
+            Stream.continually(stream.readLine()).takeWhile(_ != null).foreach { line =>
+              send.write(line)
+              send.write("\n")
+            }
+          }
+        }
+        Running(Some(RunningData(proc, new Pump(out, stdoutSink), new Pump(err, stderrSink))))
+      } catch {
+        case e: java.io.IOException => {
+          stderrSink.append(e.getMessage)
+          Running(None)
         }
       }
     }
